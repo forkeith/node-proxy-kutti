@@ -23,7 +23,7 @@ const { Readable } = require('stream')
 
 
 const log = console.log.bind(console);
-const httpsPort = os.tmpdir() + `/proxy-kutti-${Date.now()}.sock`
+const httpsPort = 3110;
 const configHome = os.homedir() + '/.config/proxy-kutti';
 const configFile = process.env.PROXY_KUTTI_CONFIG || configHome + '/config';
 const config = {
