@@ -84,7 +84,9 @@ async function getContent(httpModule, origReq, origRes) {
   const mappedPort = mappedUrl.port ? ':' + mappedUrl.port : '';
   const method = origReq.method;
   const proto = httpModule === http ? 'http':'https';
-  let cachedFile = `${config.cache_dir}/${proto}/${mappedUrl.host}${mappedPort}/${method}${mappedUrl.path}`;
+
+  const safe_filepath = mappedUrl.path.replace(/[\\?%*:|"<>&,]/g, '-'); // TODO: deal with relative paths going up further than they should?
+  let cachedFile = `${config.cache_dir}/${proto}/${mappedUrl.host}${mappedPort}/${method}${safe_filepath}`;
   if( mappedUrl.path.slice(-1) === '/' ){
     cachedFile += '#index.data';
   } else {
@@ -245,6 +247,7 @@ function main() {
   const util = require('util');
   httpProxy.on('connect', function(req, res) {
     res.write(
+      // TODO: why HTTP/1.0 here?
       'HTTP/1.0 200 Connection established\r\nProxy-agent: proxy-kutti\r\n\r\n'
     );
     const [host, port] = isHttpMitmEnabled
