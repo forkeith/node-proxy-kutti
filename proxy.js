@@ -109,6 +109,8 @@ async function getContent(httpModule, origReq, origRes) {
           host: origUrl.host,
           port: origUrl.port,
           path: origUrl.path,
+          username: origUrl.username,
+          password: origUrl.password,
           method,
           headers: origReq.headers,
         },
