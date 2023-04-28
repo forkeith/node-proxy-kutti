@@ -98,4 +98,11 @@ Root CA certificates has to be placed in the location pointed by `root_ca_cert` 
             └── #index.data.meta
 ```
 
+# Running locally
 
+```sh
+npm install # or yarn install
+NODE_TLS_REJECT_UNAUTHORIZED=0 node proxy.js
+```
+
+Proxifier profiles live in `C:\Users\KeithDavidHall\AppData\Roaming\Proxifier4\Profiles`

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ProxifierProfile version="102" platform="Windows" product_id="0" product_minver="400">
+	<Options>
+		<Resolve>
+			<AutoModeDetection enabled="true" />
+			<ViaProxy enabled="false" />
+			<BlockNonATypes enabled="false" />
+			<ExclusionList OnlyFromListMode="false">%ComputerName%; localhost; *.local</ExclusionList>
+			<DnsUdpMode>0</DnsUdpMode>
+		</Resolve>
+		<Encryption mode="basic" />
+		<ConnectionLoopDetection enabled="true" resolve="true" />
+		<Udp mode="mode_bypass" />
+		<LeakPreventionMode enabled="false" />
+		<ProcessOtherUsers enabled="false" />
+		<ProcessServices enabled="false" />
+		<HandleDirectConnections enabled="false" />
+		<HttpProxiesSupport enabled="false" />
+	</Options>
+	<ProxyList>
+		<Proxy id="100" type="SOCKS5">
+			<Options>48</Options>
+			<Port>8842</Port>
+			<Address>127.0.0.1</Address>
+			<Label>azure jumphost</Label>
+		</Proxy>
+		<Proxy id="101" type="HTTPS">
+			<Options>304</Options>
+			<Port>3128</Port>
+			<Address>127.0.0.1</Address>
+			<Label>package cache node-kutti</Label>
+		</Proxy>
+	</ProxyList>
+	<ChainList />
+	<RuleList>
+		<Rule enabled="true">
+			<Action type="Direct" />
+			<Targets>localhost; 127.0.0.1; %ComputerName%; ::1</Targets>
+			<Name>Localhost</Name>
+		</Rule>
+		<Rule enabled="true">
+			<Action type="Proxy">100</Action>
+			<Targets>vipps-dr1-sqlsrv01.database.windows.net
+*.worker.database.windows.net</Targets>
+			<Applications>azuredatastudio.exe
+microsoftsqltoolsservicelayer.exe
+linqpad7.exe</Applications>
+			<Name>Data Studio</Name>
+		</Rule>
+		<Rule enabled="true">
+			<Action type="Proxy">101</Action>
+			<Targets>files.pythonhosted.org</Targets>
+			<Applications>python.exe</Applications>
+			<Name>Package Cache</Name>
+		</Rule>
+		<Rule enabled="true">
+			<Action type="Direct" />
+			<Name>Default</Name>
+		</Rule>
+	</RuleList>
+</ProxifierProfile>
