@@ -21,6 +21,7 @@ const net = require('net');
 const os = require('os');
 const { Readable } = require('stream')
 
+const hours_in_day = 24;
 
 const log = console.log.bind(console);
 const httpsPort = 3110;
@@ -32,8 +33,29 @@ const config = {
   cache_dir: os.homedir() + '/.cache/proxy-kutti',
   root_ca_key: configHome + '/rootCA.key',
   root_ca_cert: configHome + '/rootCA.pem',
-  url_rewrites: '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# #https?://(.*)epel/7/x86_64/#http://mirror.epel/7/x86_64/#',
+  url_rewrites: '#https://pecl.php.nethttps://pecl.php.net/get/#https://pecl.php.net/get/#',
+  cache_rewrites: '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# ' +
+                  '#https?://(.*)epel/7/x86_64/#http://mirror.epel/7/x86_64/# ' +
+                  '#https://objects.githubusercontent.com/github-production-release-asset-(\\w+/\\d+).*&response-content-disposition=attachment%3B%20filename%3D(.*)&response-content-type=application%2Foctet-stream#https://objects.githubusercontent.com/github-production-release-asset-kutticache/$1/$2# ' +
+                  '#(https://codeload.github.com/[^/]+/[^/]+/legacy.zip/\w+)?token=\w+#$1# ', // remove token from codeload url for cache
+  cache_control: [
+    {
+      host: 'deb.debian.org',
+      path: new RegExp('/debian/dists/.*/InRelease'),
+      cache_duration: 1 * hours_in_day,
+      force_refresh: true, // server returns 304 not modified despite the content having an expiry date
+    }
+  ],
+  cache_never_expires_for_content_types: [
+    "application/vnd.oci.image.index.v1+json",
+    "application/zip",
+  ],
 };
+
+// NOTE: things to check:
+// - does it support keep alive? both from clients connecting to the proxy and for outgoing requests?
+// - why is it a HTTP 1.0 proxy? does it matter?
+// - see other TODO comments
 
 try {
   Object.assign(config, require(configFile));
@@ -42,17 +64,22 @@ Object.keys(config).forEach(function(k) {
   config[k] = process.env['PROXY_KUTTI_' + k] || config[k];
 });
 
-const urlMappings = config.url_rewrites.split(' ').map(function(pattern) {
-  debugger;
-  if (pattern[0] === pattern.slice(-1)) {
-    const [search, replace] = pattern.slice(1, -1).split(pattern[0]);
-    return { search: new RegExp(search), replace };
-  }
-  throw new Error(`Invalid url_rewrite "${pattern}"`);
-});
+const urlMappings = parseUrlMappings(config.url_rewrites);
+const urlCacheMappings = parseUrlMappings(config.cache_rewrites);
+
+function parseUrlMappings(mappings) {
+  return mappings.split(' ').map(function(pattern) {
+    if (pattern === '') return null; // skip empty patterns
+    if (pattern[0] === pattern.slice(-1)) {
+      const [search, replace] = pattern.slice(1, -1).split(pattern[0]);
+      return { search: new RegExp(search), replace };
+    }
+    throw new Error(`Invalid url_rewrite "${pattern}"`);
+  }).filter(urlMapping => urlMapping != null);
+}
 
 
-function mapUrl(origUrl) {
+function mapUrl(urlMappings, origUrl) {
   let out = origUrl;
 
   let i = 0,
@@ -95,66 +122,216 @@ const cyrb53 = (str, seed = 0) => {
 
 async function getContent(httpModule, origReq, origRes) {
   const origUrl = url.parse(origReq.url);
-  const mappedUrlStr = mapUrl(origReq.url);
+  const mappedUrlStr = mapUrl(urlMappings, origReq.url);
   const mappedUrl = url.parse(mappedUrlStr);
-  const mappedPort = mappedUrl.port ? ':' + mappedUrl.port : '';
+  const cacheUrlStr = mapUrl(urlCacheMappings, origReq.url);
+  const cacheUrl = url.parse(cacheUrlStr);
+  const cachePort = cacheUrl.port ? ':' + cacheUrl.port : '';
   const method = origReq.method;
   const proto = httpModule === http ? 'http':'https';
 
-  const safe_filepath = mappedUrl.pathname + (mappedUrl.search ? cyrb53(mappedUrl.search) : ''); //mappedUrl.path.replace(/[\\?%*:|"<>&,]/g, '-'); // TODO: deal with relative paths going up further than they should?
-  let cachedFile = `${config.cache_dir}/${proto}/${mappedUrl.host}${mappedPort}/${method}${safe_filepath}`;
+  // TODO: currently no option to cache separately based on request headers like Accept etc.
+  const safe_filepath = cacheUrl.pathname + (cacheUrl.search ? cyrb53(cacheUrl.search) : ''); // TODO: deal with relative paths going up further than they should?
+  let cachedFile = `${config.cache_dir}/${proto}/${cacheUrl.host}${cachePort}/${method}${safe_filepath}`;
   if( mappedUrl.path.slice(-1) === '/' ){
     cachedFile += '#index.data';
   } else {
     cachedFile += '.data';
   }
-  const cachedFileMeta = `${cachedFile}.meta`;
-  let proxyRes;
-  let isHit = false;
+  let proxyRes = null;
+  let isHit = '';
+
+  const requestDetails = {
+    host: mappedUrl.host ?? origUrl.host,
+    port: mappedUrl.port ?? origUrl.port,
+    path: mappedUrl.path ?? origUrl.path,
+    username: origUrl.username,
+    password: origUrl.password,
+    method,
+    headers: origReq.headers,
+    timeout: 1000 * 60 * 30,
+    state: {
+      cachedFile: cachedFile,
+      cachedFileMeta: `${cachedFile}.meta`,
+      other: mappedUrlStr,
+      origUrl: origReq.url,
+    },
+  };
+  //console.log(requestDetails);
 
 
   if( cachedFile in runnninRequests ){
     await untillRequestFinished( cachedFile );
   }
-  if (false !== (await fsPromise.access(cachedFileMeta).catch(() => false))) {
-    proxyRes = method === 'HEAD' ? Readable.from('') : fs.createReadStream(cachedFile);
-    Object.assign( proxyRes, JSON.parse(await fsPromise.readFile(cachedFileMeta)) );
-    isHit = true;
-  } else {
-    proxyRes = await new Promise(res => {
-      const proxyReq = httpModule.request(
-        {
-          host: origUrl.host,
-          port: origUrl.port,
-          path: origUrl.path,
-          username: origUrl.username,
-          password: origUrl.password,
-          method,
-          headers: origReq.headers,
-        },
-        res
-      );
-      origReq.pipe( proxyReq );
-    });
-    await fsPromise.mkdir(dirname(cachedFile), { recursive: true });
-    /**
-     *  write metadata only if the request completed successfully
-     *  Otherwise, partial & invalid cached content will be served next time
-     */
-    origRes.on('finish', () =>  fsPromise.writeFile(cachedFileMeta, JSON.stringify({ headers: proxyRes.headers, statusCode: proxyRes.statusCode } )) )
-    proxyRes.pipe( startNewRequest(cachedFile));
+  if (false !== (await fsPromise.access(requestDetails.state.cachedFileMeta).catch(() => false))) {
+    proxyRes = await cacheHit(requestDetails);
+    if (proxyRes != null) {
+      isHit = "Hit!";
+    } else {
+      isHit = "stale";
+    }
+  }
+  if (proxyRes === null) {
+    if (isHit === '')
+      isHit = "Miss";
+    proxyRes = await cacheMiss(origReq, requestDetails, httpModule, origRes);
   }
 
-  console.log(`${new Date().toISOString()} ${isHit ? 'Hit!' : 'Miss'} ${method} ${origReq.url} => ${cachedFile}`);
+  // color ansi escapes https://stackoverflow.com/a/41407246/4473405
+  const ansiResetColor = '\x1b[0m';
+  const ansiColorRed = '\x1b[31m';
+  const ansiColorGreen = '\x1b[32m';
+  const ansiColorYellow = '\x1b[33m';
+  // TODO: option to show in local time instead of UTC
+  // TODO: color hit and miss as well
+  let statusText = (proxyRes.statusCode < 300 ? ansiColorGreen : ansiColorRed) + proxyRes.statusCode.toString() + ansiResetColor;
+  let cacheText = (isHit == "stale" ? ansiColorYellow : isHit == "Miss" ? ansiColorRed : ansiColorGreen) + isHit + ansiResetColor;
+  console.log(`${new Date().toISOString()} ${cacheText} ${method} ${origReq.url} => ${cachedFile.substr(config.cache_dir.length + 1)} (${statusText} ${proxyRes.headers['content-length'] ? (proxyRes.headers['content-length'] / 1024).toFixed(2).toString() + ' KiB' : ''})`);
 
   origRes.writeHead(proxyRes.statusCode, proxyRes.headers);
-  proxyRes.pipe(origRes);
+  proxyRes.pipe(origRes, {end: true}); // end writer when reader ends
   /**
    *  Don't let download to continue if client closes the connection before it is finished
    */
-  origRes.on('close', () => proxyRes.destroy() )
+  origRes.on('close', () => proxyRes.destroy() );
+  //origRes.on('close', () => { /*proxyRes.destroy();*/ console.log('client closed connection for ' + origUrl.path); } );
 
   return proxyRes;
+}
+
+async function cacheHit(requestDetails) {
+  let proxyRes = requestDetails.method === 'HEAD' ? Readable.from('') : fs.createReadStream(requestDetails.state.cachedFile);
+  let metaData = JSON.parse(await fsPromise.readFile(requestDetails.state.cachedFileMeta));
+  Object.assign( proxyRes, metaData );
+
+  if (!proxyRes['proxy-kutti-orig-request']) {
+    // TODO: remove me. This on only temporary to include request details of previously fulfilled requests before this was tracked
+    fsPromise.writeFile(requestDetails.state.cachedFileMeta, JSON.stringify({ ...metaData, 'proxy-kutti-orig-request': { ...requestDetails, 'state': null, 'cache-date': new Date().toISOString(), } } ));
+  } else {
+    // TODO: update cache access date
+    let cache_info = isCacheHitStillValid(metaData, requestDetails);
+    if (cache_info.expired) {
+      if (!cache_info.force_refresh) {
+        // add ETag from previously cached response to request headers
+        if (metaData['headers']['etag'] && !requestDetails.headers['if-none-match']) {
+          requestDetails.headers['if-none-match'] = metaData['headers']['etag']
+        }
+        if (metaData['headers']['last-modified'] && !requestDetails.headers['if-modified-since']) {
+          requestDetails.headers['if-modified-since'] = metaData['headers']['last-modified']
+        }
+      }
+      return null;
+    }
+
+    delete proxyRes['proxy-kutti-orig-request'];
+  }
+  return proxyRes;
+}
+
+function isCacheHitStillValid(metaData, requestDetails) {
+  // assume all zip files etc are unchanged
+  // TODO: - for the above, check if the url contains a version or not...
+  if (config.cache_never_expires_for_content_types.indexOf(metaData["content-type"]) > -1) {
+    return {
+      expired: false,
+      reason: "never expires for content type",
+    };
+  }
+
+  let now = null;
+  for (const item of config.cache_control) {
+    if (item.host === requestDetails.host) {
+      if (item.path.test(requestDetails.path)) {
+        if (!now) {
+          now = new Date();
+        }
+        let cacheDateIsoString = metaData['proxy-kutti-orig-request']['cache-date'];
+
+        let cacheDate = new Date(Date.parse(cacheDateIsoString));
+        let expireDate = addHoursToDate(cacheDate, item.cache_duration);
+        if (expireDate < now) {
+          return {
+            expired: true,
+            force_refresh: item.force_refresh,
+            reason: "stale",
+          };
+        } else {
+          return {
+            expired: false,
+            force_refresh: item.force_refresh,
+            reason: "cache not expired yet",
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    expired: false,
+    reason: "no-cache-control",
+  };
+}
+
+// const parseDate = dateString => {
+//   const b = dateString.split(/\D+/);
+//   const offsetMult = dateString.indexOf('+') !== -1 ? -1 : 1;
+//   const hrOffset = offsetMult * (+b[7] || 0);
+//   const minOffset = offsetMult * (+b[8] || 0);  
+//   return new Date(Date.UTC(+b[0], +b[1] - 1, +b[2], +b[3] + hrOffset, +b[4] + minOffset, +b[5], +b[6] || 0));
+// };
+
+function addHoursToDate(date, hours) {
+  return new Date(new Date(date).setHours(date.getHours() + hours));
+}
+
+async function cacheMiss(origReq, requestDetails, httpModule, origRes) {
+  let proxyRes = await new Promise(res => {
+    const proxyReq = httpModule.request(
+      requestDetails,
+      res
+    );
+    origReq.pipe( proxyReq );
+  });
+  await fsPromise.mkdir(dirname(requestDetails.state.cachedFile), { recursive: true });
+
+  /**
+   *  write metadata only if the request completed successfully
+   *  Otherwise, partial & invalid cached content will be served next time
+   */
+  origRes.on('finish', () => {
+    if (proxyRes.statusCode < 400 && proxyRes.statusCode !== 302 && proxyRes.statusCode !== 307) {// && proxyRes.statusCode != 301) {
+      if (proxyRes.statusCode == 304) {
+        // not modified...
+        // TODO: update cache date
+      } else {
+        // probably we don't want to cache mutating effects
+        // theoretically we could if we wanted to even invalidate the HEAD/GET at the same path...
+        if (requestDetails.method != 'POST' && requestDetails.method != 'PUT') {
+          writeMetaData(requestDetails, proxyRes);
+        }
+      }
+    }
+  });
+  // don't update file on disk if we receive a not modified response
+  if (proxyRes.statusCode !== 304) {
+    proxyRes.pipe( startNewRequest(requestDetails.state.cachedFile));
+  }
+  // attempt to title-case Location header for PHP Pear
+  if (proxyRes.statusCode === 301) {
+    proxyRes.headers['Location'] = proxyRes.headers['location'];
+    delete proxyRes.headers['location'];
+  }
+
+  return proxyRes;
+}
+
+function writeMetaData(requestDetails, proxyRes) {
+  fsPromise.writeFile(requestDetails.state.cachedFileMeta, JSON.stringify({
+    headers: proxyRes.headers,
+    statusCode: proxyRes.statusCode,
+    'proxy-kutti-orig-request':
+      { ...requestDetails, 'cache-date': new Date().toISOString(), 'state': null, 'password': null /* TODO: mask password if wasn't blank for easier debugging */ }
+  }));
 }
 
 
@@ -288,7 +465,7 @@ ${JSON.stringify(config, null, 2).slice(2, -2)}
 ${httpsMsg}
 Run the following command shell to start using this proxy
   export http_proxy=http://${config.host}:${config.port}
-  ${isHttpMitmEnabled? 'export https_proxy=http://'+config.host+':'+config.port: ''}
+  ${isHttpMitmEnabled? 'export https_proxy=http://'+config.host+':'+httpsPort: ''}
 
   `);
   });

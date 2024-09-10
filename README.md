@@ -4,7 +4,8 @@ Simple and transparent caching forward proxy server written in Nodejs.
 ## Features
 * It has only one dependency ( `node-forge` )
     - it is used for creating self-signed certificates dynamically for MITM https proxy server.
-* By default configuration, it will indefinitely cache all http requests irrespective of their cache headers.
+* By default configuration, it will indefinitely cache all GET http requests irrespective of their cache headers.
+  - except for deb.debian.org, which will be cached for 1 day only
 * All cached data is transparently saved to a cache directory with simple file structure.
     - Contents are saved as it & headers are saved as a json file. It can be viewed/edited later
 * If Root CA certificates are provided, then MITM HTTPS proxy server will get enabled and HTTPS Traffic also will get cached.
