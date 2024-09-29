@@ -142,9 +142,9 @@ async function getContent(httpModule, origReq, origRes) {
   let isHit = '';
 
   const requestDetails = {
-    host: mappedUrl.host ?? origUrl.host,
-    port: mappedUrl.port ?? origUrl.port,
-    path: mappedUrl.path ?? origUrl.path,
+    host: mappedUrl.host || origUrl.host,
+    port: mappedUrl.port || origUrl.port,
+    path: mappedUrl.path || origUrl.path,
     username: origUrl.username,
     password: origUrl.password,
     method,
