@@ -34,7 +34,8 @@ const config = {
   root_ca_key: configHome + '/rootCA.key',
   root_ca_cert: configHome + '/rootCA.pem',
   url_rewrites: '#https://pecl.php.nethttps://pecl.php.net/get/#https://pecl.php.net/get/#',
-  cache_rewrites: '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# ' +
+  cache_rewrites: '#https://pecl.php.nethttps://pecl.php.net/get/#https://pecl.php.net/get/# ' +
+                  '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# ' +
                   '#https?://(.*)epel/7/x86_64/#http://mirror.epel/7/x86_64/# ' +
                   '#https://objects.githubusercontent.com/github-production-release-asset-(\\w+/\\d+).*&response-content-disposition=attachment%3B%20filename%3D(.*)&response-content-type=application%2Foctet-stream#https://objects.githubusercontent.com/github-production-release-asset-kutticache/$1/$2# ' +
                   '#(https://codeload.github.com/[^/]+/[^/]+/legacy.zip/\w+)?token=\w+#$1# ' + // remove token from codeload url for cache
