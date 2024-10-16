@@ -37,7 +37,8 @@ const config = {
   cache_rewrites: '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# ' +
                   '#https?://(.*)epel/7/x86_64/#http://mirror.epel/7/x86_64/# ' +
                   '#https://objects.githubusercontent.com/github-production-release-asset-(\\w+/\\d+).*&response-content-disposition=attachment%3B%20filename%3D(.*)&response-content-type=application%2Foctet-stream#https://objects.githubusercontent.com/github-production-release-asset-kutticache/$1/$2# ' +
-                  '#(https://codeload.github.com/[^/]+/[^/]+/legacy.zip/\w+)?token=\w+#$1# ', // remove token from codeload url for cache
+                  '#(https://codeload.github.com/[^/]+/[^/]+/legacy.zip/\w+)?token=\w+#$1# ' + // remove token from codeload url for cache
+                  '#(https://nugetregistryv2prod.blob.core.windows.net/nugetregistryv2prod/blobs/[^/]+/[^/]+/[^/]+)/.*#$1# ', // remove random crap from nuget url for cache
   cache_control: [
     {
       host: 'deb.debian.org',
