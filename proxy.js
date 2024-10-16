@@ -42,7 +42,7 @@ const config = {
   cache_control: [
     {
       host: 'deb.debian.org',
-      path: new RegExp('/debian/dists/.*/InRelease'),
+      path: new RegExp('/debian.*/dists/.*/InRelease'),
       cache_duration: 1 * hours_in_day,
       force_refresh: true, // server returns 304 not modified despite the content having an expiry date
     }
