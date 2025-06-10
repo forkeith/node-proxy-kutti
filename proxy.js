@@ -47,7 +47,19 @@ const config = {
       path: new RegExp('/debian.*/dists/.*/InRelease'),
       cache_duration: 1 * hours_in_day,
       force_refresh: true, // server returns 304 not modified despite the content having an expiry date
-    }
+    },
+    {
+      host: 'nuget.pkg.github.com',
+      path: new RegExp('/[^/]+/download/[^/]+/index.json'),
+      cache_duration: 1 * hours_in_day,
+      //force_refresh: true,
+    },
+    {
+      host: 'api.nuget.org',
+      path: new RegExp('/v3-flatcontainer/[^/]+/index.json'),
+      cache_duration: 1 * hours_in_day,
+      //force_refresh: true,
+    },
   ],
   cache_never_expires_for_content_types: [
     "application/vnd.oci.image.index.v1+json",
