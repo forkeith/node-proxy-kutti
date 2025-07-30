@@ -60,6 +60,18 @@ const config = {
       cache_duration: 1 * hours_in_day,
       //force_refresh: true,
     },
+    {
+      host: 'pecl.php.net',
+      path: new RegExp('/rest/'),
+      cache_duration: 1 * hours_in_day,
+      //force_refresh: true,
+    },
+    {
+      host: 'registry.npmjs.org',
+      path: new RegExp('/\\w+$'),
+      cache_duration: 1 * hours_in_day,
+      //force_refresh: true,
+    },
   ],
   cache_never_expires_for_content_types: [
     "application/vnd.oci.image.index.v1+json",
