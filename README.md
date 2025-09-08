@@ -76,6 +76,15 @@ For details please use / refer the gist [ generate-certificate-openssl.sh ](http
 
 Root CA certificates has to be placed in the location pointed by `root_ca_cert` & `root_ca_key` configuration values.
 
+To check if your cert will expire:
+```sh
+openssl x509 -enddate -noout -in rootCA.pem
+```
+to create a new certificate from the same signing key:
+openssl req -x509 -sha256 -days 365 -key rootCA.key -in server.csr
+save it as rootCA.pem
+Rerun inject_dockerfile
+
 
 ## Example structure of cache directory
 

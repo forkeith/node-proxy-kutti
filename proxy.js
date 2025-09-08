@@ -38,6 +38,7 @@ const config = {
                   '#https?://(.*)/7.7.1908/#http://mirrors.centos/7.7.1908/# ' +
                   '#https?://(.*)epel/7/x86_64/#http://mirror.epel/7/x86_64/# ' +
                   '#https://objects.githubusercontent.com/github-production-release-asset-(\\w+/\\d+).*&response-content-disposition=attachment%3B%20filename%3D(.*)&response-content-type=application%2Foctet-stream#https://objects.githubusercontent.com/github-production-release-asset-kutticache/$1/$2# ' +
+                  '#https://(?:release-assets|objects).githubusercontent.com/github-production-release-asset/(\\d+/[-\\w]+)\\?.*attachment%3B\\+filename%3D(?!datadog-setup\.php)([^&]+)&.*&response-content-disposition=attachment%3B%20filename%3D([^&]+)&response-content-type=application%2Foctet-stream#https://objects.githubusercontent.com/github-production-release-asset-kutticache/$3/$2# ' + // TODO: instead of checking for datadog-setup.php, check that the filename contains \d+\.\d+ i.e. a version number
                   '#(https://codeload.github.com/[^/]+/[^/]+/legacy.zip/\\w+)?token=\\w+#$1# ' + // remove token from codeload url for cache
                   '#(https://nugetregistryv2prod.blob.core.windows.net/nugetregistryv2prod/blobs/[^/]+/[^/]+/[^/]+)/.*#$1# ' + // remove random crap from nuget url for cache
                   '#(https://storage.googleapis.com/proxy-golang-org-prod/.*?.zip)[?].*#$1# ', // remove signature crap from golang urls for cache
@@ -72,11 +73,22 @@ const config = {
       cache_duration: 1 * hours_in_day,
       //force_refresh: true,
     },
+    {
+      host: 'telemetry.vercel.com', // admin frontend old spams telemetry to this endpoint during `make run` docker build
+      path: new RegExp('/api/turborepo/v1/events'),
+      cache_duration: 365 * hours_in_day,
+    },
+    {
+      host: 'registry.npmjs.org',
+      path: new RegExp('/.*'),
+      cache_duration: 2 * hours_in_day,
+    },
   ],
   cache_never_expires_for_content_types: [
     "application/vnd.oci.image.index.v1+json",
     "application/zip",
   ],
+  request_timeout: 1000 * 60 * 5,
 };
 
 // NOTE: things to check:
@@ -176,7 +188,7 @@ async function getContent(httpModule, origReq, origRes) {
     password: origUrl.password,
     method,
     headers: origReq.headers,
-    timeout: 1000 * 60 * 30,
+    timeout: config.request_timeout,
     state: {
       cachedFile: cachedFile,
       cachedFileMeta: `${cachedFile}.meta`,
@@ -240,12 +252,13 @@ async function cacheHit(requestDetails) {
     if (cache_info.expired) {
       if (!cache_info.force_refresh) {
         // add ETag from previously cached response to request headers
-        if (metaData['headers']['etag'] && !requestDetails.headers['if-none-match']) {
+        /*if (metaData['headers']['etag'] && !requestDetails.headers['if-none-match']) {
           requestDetails.headers['if-none-match'] = metaData['headers']['etag']
         }
         if (metaData['headers']['last-modified'] && !requestDetails.headers['if-modified-since']) {
           requestDetails.headers['if-modified-since'] = metaData['headers']['last-modified']
-        }
+        }*/
+        // TODO: need a way to reconcile these so we return the full cached object back to the client in case of 304 not modified
       }
       return null;
     }
@@ -317,6 +330,26 @@ async function cacheMiss(origReq, requestDetails, httpModule, origRes) {
       requestDetails,
       res
     );
+    /*proxyReq.setTimeout(requestDetails.timeout, callback => console.log('timeout', callback));
+    proxyReq.on('error', error => console.log(error));
+    proxyReq.end();*/
+    //proxyReq.on('close', () => { console.log('closed', requestDetails.path, proxyReq.complete); setTimeout(() => origReq.destroy('closed unexpectedly before completion'), 398); });
+    /*proxyReq.on('response', resp => {
+      //res.resume();
+      res.on('end', () => {
+        if (!res.complete)
+          console.error(
+            'The connection was terminated while the message was still being sent');
+      });
+    });*/
+    /*proxyReq.on('close', () => {
+      console.log('closed proxyReq', requestDetails.path, res.complete);
+      setTimeout(() => origRes.destroy('inner connection closed unexpectedly before completion'), 398);
+      if (!res.complete) {
+        writeMetaData(Object.assign({}, requestDetails, { state: { cachedFileMeta: requestDetails.state.cachedFileMeta + '.failed' }}), proxyRes);
+      }
+    });*/
+
     origReq.pipe( proxyReq );
   });
   await fsPromise.mkdir(dirname(requestDetails.state.cachedFile), { recursive: true });
@@ -325,18 +358,31 @@ async function cacheMiss(origReq, requestDetails, httpModule, origRes) {
    *  write metadata only if the request completed successfully
    *  Otherwise, partial & invalid cached content will be served next time
    */
-  origRes.on('finish', () => {
-    if (proxyRes.statusCode < 400 && proxyRes.statusCode !== 302 && proxyRes.statusCode !== 307) {// && proxyRes.statusCode != 301) {
+  origRes.on('finish', async () => {
+    //console.log('finished origRes', requestDetails.path, proxyRes.complete);
+    let shouldWriteMetaData = false;
+    //console.log(proxyRes.statusCode, proxyRes.error);
+    if (proxyRes.complete && proxyRes.statusCode < 400 && proxyRes.statusCode !== 302 && proxyRes.statusCode !== 307) {// && proxyRes.statusCode != 301) {
       if (proxyRes.statusCode == 304) {
         // not modified...
-        // TODO: update cache date
+        // update cache date
+        let metaData = JSON.parse(await fsPromise.readFile(requestDetails.state.cachedFileMeta));
+        metaData['proxy-kutti-orig-request']['cache-date'] = new Date().toISOString();
+        // here we skip the standard writeMetaData call because it would overwrite the http status code etc
+        await fsPromise.writeFile(requestDetails.state.cachedFileMeta, JSON.stringify(metaData));
+        return;
       } else {
         // probably we don't want to cache mutating effects
         // theoretically we could if we wanted to even invalidate the HEAD/GET at the same path...
         if (requestDetails.method != 'POST' && requestDetails.method != 'PUT') {
-          writeMetaData(requestDetails, proxyRes);
+          shouldWriteMetaData = true;
         }
       }
+    }
+    if (shouldWriteMetaData) {
+      await writeMetaData(requestDetails, proxyRes);
+    //} else if (!res.complete) {
+    //  writeMetaData(requestDetails, proxyRes, '.failed');
     }
   });
   // don't update file on disk if we receive a not modified response
@@ -352,8 +398,8 @@ async function cacheMiss(origReq, requestDetails, httpModule, origRes) {
   return proxyRes;
 }
 
-function writeMetaData(requestDetails, proxyRes) {
-  fsPromise.writeFile(requestDetails.state.cachedFileMeta, JSON.stringify({
+function writeMetaData(requestDetails, proxyRes, additionalExtension) {
+  return fsPromise.writeFile(requestDetails.state.cachedFileMeta + (additionalExtension ?? ''), JSON.stringify({
     headers: proxyRes.headers,
     statusCode: proxyRes.statusCode,
     'proxy-kutti-orig-request':
