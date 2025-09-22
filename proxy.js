@@ -83,6 +83,16 @@ const config = {
       path: new RegExp('/.*'),
       cache_duration: 2 * hours_in_day,
     },
+    {
+      host: 'api.github.com',
+      path: new RegExp('/repos/[^/]+/[^/]+/git/refs/heads?per_page=.*'),
+      cache_duration: 2,
+    },
+    /*{
+      host: 'api.github.com',
+      path: new RegExp('/repos/[^/]+/[^/]+/commits/.*'),
+      cache_duration: 365 * hours_in_day,
+    },*/
   ],
   cache_never_expires_for_content_types: [
     "application/vnd.oci.image.index.v1+json",
