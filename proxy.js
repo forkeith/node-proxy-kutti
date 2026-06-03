@@ -169,15 +169,12 @@ const cyrb53 = (str, seed = 0) => {
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
-async function getContent(httpModule, origReq, origRes) {
-  const origUrl = url.parse(origReq.url);
-  const mappedUrlStr = mapUrl(urlMappings, origReq.url);
+function computeCacheDetails(proto, method, reqUrlStr) {
+  const mappedUrlStr = mapUrl(urlMappings, reqUrlStr);
   const mappedUrl = url.parse(mappedUrlStr);
-  const cacheUrlStr = mapUrl(urlCacheMappings, origReq.url);
+  const cacheUrlStr = mapUrl(urlCacheMappings, reqUrlStr);
   const cacheUrl = url.parse(cacheUrlStr);
   const cachePort = cacheUrl.port ? ':' + cacheUrl.port : '';
-  const method = origReq.method;
-  const proto = httpModule === http ? 'http':'https';
 
   // TODO: currently no option to cache separately based on request headers like Accept etc.
   const safe_filepath = cacheUrl.pathname + (cacheUrl.search ? cyrb53(cacheUrl.search) : ''); // TODO: deal with relative paths going up further than they should?
@@ -187,6 +184,14 @@ async function getContent(httpModule, origReq, origRes) {
   } else {
     cachedFile += '.data';
   }
+  return { mappedUrl, mappedUrlStr, cachedFile };
+}
+
+async function getContent(httpModule, origReq, origRes) {
+  const origUrl = url.parse(origReq.url);
+  const method = origReq.method;
+  const proto = httpModule === http ? 'http':'https';
+  const { mappedUrl, mappedUrlStr, cachedFile } = computeCacheDetails(proto, method, origReq.url);
   let proxyRes = null;
   let isHit = '';
 
@@ -418,6 +423,79 @@ function writeMetaData(requestDetails, proxyRes, additionalExtension) {
 }
 
 
+function guessContentType(filename) {
+  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+  return {
+    '.zip': 'application/zip',
+    '.gz': 'application/gzip',
+    '.tgz': 'application/gzip',
+    '.bz2': 'application/x-bzip2',
+    '.xz': 'application/x-xz',
+    '.tar': 'application/x-tar',
+    '.json': 'application/json',
+  }[ext] || 'application/octet-stream';
+}
+
+/**
+ *  Manually import a previously downloaded file into the cache, e.g. for huge
+ *  GitHub release assets which time out when fetched through the proxy during
+ *  a docker build. Computes the cache file path using the same cache_rewrites
+ *  logic as the live proxy and writes the .meta file so subsequent requests
+ *  are served as cache hits.
+ */
+async function importIntoCache(args) {
+  let contentType = null;
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--content-type') {
+      contentType = args[++i];
+    } else if (args[i].startsWith('--content-type=')) {
+      contentType = args[i].slice('--content-type='.length);
+    } else {
+      positional.push(args[i]);
+    }
+  }
+  const [importUrl, srcFile] = positional;
+  if (!importUrl || !srcFile) {
+    throw new Error(
+      'Usage: proxy.js import <url> <downloaded-file> [--content-type <mime-type>]\n\n' +
+      '  <url> is the URL the client requested - copy it from the "Miss" line in the\n' +
+      '  proxy log of the failed download (cache_rewrites are applied automatically).'
+    );
+  }
+
+  const parsedUrl = url.parse(importUrl);
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error(`Expected an absolute http(s) URL, got "${importUrl}"`);
+  }
+  const proto = parsedUrl.protocol.slice(0, -1);
+  const method = 'GET';
+  const { mappedUrl, cachedFile } = computeCacheDetails(proto, method, importUrl);
+
+  await fsPromise.mkdir(dirname(cachedFile), { recursive: true });
+  await fsPromise.copyFile(srcFile, cachedFile);
+  const fileSize = (await fsPromise.stat(cachedFile)).size;
+
+  const headers = {
+    'content-length': fileSize.toString(),
+    'content-type': contentType || guessContentType(cachedFile),
+  };
+  const requestDetails = {
+    host: mappedUrl.host,
+    port: mappedUrl.port,
+    path: mappedUrl.path,
+    method,
+    headers: {},
+    state: { cachedFileMeta: `${cachedFile}.meta` },
+    'proxy-kutti-imported-from': srcFile,
+  };
+  await writeMetaData(requestDetails, { headers, statusCode: 200 });
+
+  log(`Imported ${srcFile} (${(fileSize / 1024).toFixed(2)} KiB, ${headers['content-type']})`);
+  log(`  => ${cachedFile}`);
+}
+
+
 function createFakeCertificateByDomain(caKey, caCert, domain) {
   const keys = pki.rsa.generateKeyPair(2048);
   const cert = pki.createCertificate();
@@ -555,8 +633,15 @@ Run the following command shell to start using this proxy
 }
 
 if (require.main === module) {
-  main();
-  process.on('uncaughtException', function (err) {
-    log(err);
-  })
+  if (process.argv[2] === 'import') {
+    importIntoCache(process.argv.slice(3)).catch(function (err) {
+      console.error(err.message);
+      process.exit(1);
+    });
+  } else {
+    main();
+    process.on('uncaughtException', function (err) {
+      log(err);
+    })
+  }
 }

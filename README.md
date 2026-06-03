@@ -108,6 +108,35 @@ Rerun inject_dockerfile
             └── #index.data.meta
 ```
 
+# Manually importing a file into the cache
+
+Sometimes a huge download (e.g. a GitHub release asset fetched during a docker build) times out
+when fetched through the proxy. In that case, download the file yourself (browser/download manager)
+and import it into the cache:
+
+```sh
+node proxy.js import <url> <downloaded-file> [--content-type <mime-type>]
+```
+
+* `<url>` is the URL the client requested — copy it from the red `Miss` line in the proxy log of
+  the failed download attempt. The same `cache_rewrites` rules as the live proxy are applied to it,
+  so signed/tokenised URLs (GitHub release assets etc.) are normalised to the shared cache key
+  automatically.
+* The content type is guessed from the file extension (`.zip`, `.gz`, `.tar`, ...) and can be
+  overridden with `--content-type`. Note that types listed in `cache_never_expires_for_content_types`
+  never expire.
+* The import writes the `.data` file and a synthesised `.meta` file (status 200, marked with
+  `proxy-kutti-imported-from`), so the next request through the proxy is served as a cache `Hit!`
+  without contacting the upstream server.
+
+Example:
+
+```sh
+node proxy.js import \
+  'https://objects.githubusercontent.com/github-production-release-asset/12345/...?X-Amz-...' \
+  ~/Downloads/huge-asset-v1.2.3.zip
+```
+
 # Running locally
 
 ```sh

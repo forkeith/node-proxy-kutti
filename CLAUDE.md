@@ -11,7 +11,10 @@ Proxy-kutti is a caching forward proxy server (fork of harish2704/node-proxy-kut
 ```sh
 npm install                                      # or yarn install
 NODE_TLS_REJECT_UNAUTHORIZED=0 node proxy.js     # run locally
+node proxy.js import <url> <file> [--content-type <mime>]  # manually add a downloaded file to the cache
 ```
+
+The `import` subcommand exists for downloads that time out through the proxy (huge GitHub release assets during docker builds): download the file out-of-band, then import it using the URL from the `Miss` log line. It derives the cache path via the same `computeCacheDetails`/`cache_rewrites` logic as the live proxy and synthesizes the `.meta` file so the next request is a cache hit.
 
 There are no tests, no linter, and no build step. Prettier config exists (`.prettierrc.js`: 2-space indent, single quotes, semicolons, es5 trailing commas).
 
