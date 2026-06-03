@@ -174,11 +174,11 @@ function computeCacheDetails(proto, method, reqUrlStr) {
   const mappedUrl = url.parse(mappedUrlStr);
   const cacheUrlStr = mapUrl(urlCacheMappings, reqUrlStr);
   const cacheUrl = url.parse(cacheUrlStr);
-  const cachePort = cacheUrl.port ? ':' + cacheUrl.port : '';
 
   // TODO: currently no option to cache separately based on request headers like Accept etc.
   const safe_filepath = cacheUrl.pathname + (cacheUrl.search ? cyrb53(cacheUrl.search) : ''); // TODO: deal with relative paths going up further than they should?
-  let cachedFile = `${config.cache_dir}/${proto}/${cacheUrl.host}${cachePort}/${method}${safe_filepath}`;
+  // note: cacheUrl.host already includes the port when one was specified
+  let cachedFile = `${config.cache_dir}/${proto}/${cacheUrl.host}/${method}${safe_filepath}`;
   if( mappedUrl.path.slice(-1) === '/' ){
     cachedFile += '#index.data';
   } else {
@@ -286,7 +286,7 @@ async function cacheHit(requestDetails) {
 function isCacheHitStillValid(metaData, requestDetails) {
   // assume all zip files etc are unchanged
   // TODO: - for the above, check if the url contains a version or not...
-  if (config.cache_never_expires_for_content_types.indexOf(metaData["content-type"]) > -1) {
+  if (config.cache_never_expires_for_content_types.indexOf((metaData.headers || {})['content-type']) > -1) {
     return {
       expired: false,
       reason: "never expires for content type",
@@ -478,7 +478,8 @@ async function importIntoCache(args) {
 
   const headers = {
     'content-length': fileSize.toString(),
-    'content-type': contentType || guessContentType(cachedFile),
+    // strip the .data suffix so the extension of the (cache-rewritten) filename is used
+    'content-type': contentType || guessContentType(cachedFile.slice(0, -'.data'.length)),
   };
   const requestDetails = {
     host: mappedUrl.host,
@@ -631,6 +632,19 @@ Run the following command shell to start using this proxy
   `);
   });
 }
+
+module.exports = {
+  config,
+  parseUrlMappings,
+  mapUrl,
+  cyrb53,
+  computeCacheDetails,
+  cacheHit,
+  isCacheHitStillValid,
+  addHoursToDate,
+  guessContentType,
+  importIntoCache,
+};
 
 if (require.main === module) {
   if (process.argv[2] === 'import') {

@@ -12,11 +12,12 @@ Proxy-kutti is a caching forward proxy server (fork of harish2704/node-proxy-kut
 npm install                                      # or yarn install
 NODE_TLS_REJECT_UNAUTHORIZED=0 node proxy.js     # run locally
 node proxy.js import <url> <file> [--content-type <mime>]  # manually add a downloaded file to the cache
+npm test                                         # run tests (node:test, no dependencies)
 ```
 
 The `import` subcommand exists for downloads that time out through the proxy (huge GitHub release assets during docker builds): download the file out-of-band, then import it using the URL from the `Miss` log line. It derives the cache path via the same `computeCacheDetails`/`cache_rewrites` logic as the live proxy and synthesizes the `.meta` file so the next request is a cache hit.
 
-There are no tests, no linter, and no build step. Prettier config exists (`.prettierrc.js`: 2-space indent, single quotes, semicolons, es5 trailing commas).
+Tests use the built-in `node:test` runner (no extra dependencies), live in `test/`, and run with `npm test`. They require `proxy.js` as a module (exports at the bottom of the file) and must set `PROXY_KUTTI_CONFIG` and `PROXY_KUTTI_cache_dir` env vars *before* the require, since config is resolved at module load time. There is no linter and no build step. Prettier config exists (`.prettierrc.js`: 2-space indent, single quotes, semicolons, es5 trailing commas).
 
 Configuration is loaded from `~/.config/proxy-kutti/config` (overridable via `PROXY_KUTTI_CONFIG`), and any individual config key can be overridden with a `PROXY_KUTTI_<key>` env var. Defaults live in the `config` object at the top of `proxy.js`.
 
