@@ -35,6 +35,14 @@ after(() => fs.rmSync(tmpCacheDir, { recursive: true, force: true }));
 
 const hoursAgo = hours => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const waitFor = async (predicate, timeoutMs = 1000, intervalMs = 10) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await wait(intervalMs);
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms`);
+};
 
 const getFreePort = () =>
   new Promise((resolve, reject) => {
@@ -266,7 +274,15 @@ describe('cacheHit', () => {
     };
     const proxyRes = await cacheHit(requestDetails);
     assert.notStrictEqual(proxyRes, null);
-    await wait(25);
+
+    await waitFor(() => {
+      try {
+        const updatedMeta = JSON.parse(fs.readFileSync(cachedFileMeta, 'utf8'));
+        return Boolean(updatedMeta['proxy-kutti-orig-request']);
+      } catch {
+        return false;
+      }
+    });
 
     const updatedMeta = JSON.parse(fs.readFileSync(cachedFileMeta, 'utf8'));
     assert.ok(updatedMeta['proxy-kutti-orig-request']);
