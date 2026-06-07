@@ -4,6 +4,9 @@ process.env.PROXY_KUTTI_CONFIG = '/nonexistent/proxy-kutti-test-config';
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const net = require('net');
+const { spawn } = require('child_process');
 const tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-kutti-test-'));
 process.env.PROXY_KUTTI_cache_dir = tmpCacheDir;
 
@@ -26,6 +29,17 @@ const {
 after(() => fs.rmSync(tmpCacheDir, { recursive: true, force: true }));
 
 const hoursAgo = hours => new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+const getFreePort = () =>
+  new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+    server.on('error', reject);
+  });
 
 describe('parseUrlMappings', () => {
   it('parses a sed-style pattern into search regex and replacement', () => {
@@ -175,6 +189,58 @@ describe('addHoursToDate', () => {
   });
 });
 
+describe('cacheHit', () => {
+  it('returns null for stale entries that match cache_control', async () => {
+    const cachedFile = path.join(tmpCacheDir, 'stale-hit.data');
+    const cachedFileMeta = `${cachedFile}.meta`;
+    fs.writeFileSync(cachedFile, 'stale-content');
+    fs.writeFileSync(
+      cachedFileMeta,
+      JSON.stringify({
+        headers: { 'content-type': 'text/plain' },
+        statusCode: 200,
+        'proxy-kutti-orig-request': { 'cache-date': hoursAgo(25) },
+      })
+    );
+
+    const result = await cacheHit({
+      host: 'registry.npmjs.org',
+      path: '/lodash',
+      method: 'GET',
+      headers: {},
+      state: { cachedFile, cachedFileMeta },
+    });
+    assert.strictEqual(result, null);
+  });
+
+  it('returns an empty body stream for HEAD cache hits', async () => {
+    const cachedFile = path.join(tmpCacheDir, 'head-hit.data');
+    const cachedFileMeta = `${cachedFile}.meta`;
+    fs.writeFileSync(cachedFile, 'should-not-be-read-for-head');
+    fs.writeFileSync(
+      cachedFileMeta,
+      JSON.stringify({
+        headers: { 'content-type': 'application/octet-stream' },
+        statusCode: 204,
+        'proxy-kutti-orig-request': { 'cache-date': hoursAgo(1) },
+      })
+    );
+
+    const proxyRes = await cacheHit({
+      host: 'example.com',
+      path: '/head',
+      method: 'HEAD',
+      headers: {},
+      state: { cachedFile, cachedFileMeta },
+    });
+    assert.notStrictEqual(proxyRes, null);
+    assert.strictEqual(proxyRes.statusCode, 204);
+    let body = '';
+    for await (const chunk of proxyRes) body += chunk;
+    assert.strictEqual(body, '');
+  });
+});
+
 describe('guessContentType', () => {
   it('maps known extensions case-insensitively', () => {
     assert.strictEqual(guessContentType('foo-1.2.3.zip'), 'application/zip');
@@ -241,5 +307,113 @@ describe('importIntoCache', () => {
     const { cachedFile } = computeCacheDetails('https', 'GET', importUrl);
     const metaData = JSON.parse(fs.readFileSync(`${cachedFile}.meta`, 'utf8'));
     assert.strictEqual(metaData.headers['content-type'], 'application/x-mystery');
+  });
+
+  it('supports --content-type=<mime-type> syntax', async () => {
+    const srcFile = path.join(tmpCacheDir, 'src-asset-equals.bin');
+    fs.writeFileSync(srcFile, 'binary stuff');
+
+    const importUrl = 'https://example.com/downloads/asset-equals.bin';
+    await importIntoCache([importUrl, srcFile, '--content-type=application/x-equals']);
+
+    const { cachedFile } = computeCacheDetails('https', 'GET', importUrl);
+    const metaData = JSON.parse(fs.readFileSync(`${cachedFile}.meta`, 'utf8'));
+    assert.strictEqual(metaData.headers['content-type'], 'application/x-equals');
+  });
+});
+
+describe('proxy integration cache behavior', () => {
+  it('serves identical second request from cache without hitting origin again', { timeout: 15000 }, async () => {
+    const integrationCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-kutti-e2e-'));
+    const originPort = await getFreePort();
+    const proxyPort = await getFreePort();
+    let originRequestCount = 0;
+    const originServer = http.createServer((req, res) => {
+      originRequestCount++;
+      const body = JSON.stringify({ requestCount: originRequestCount, path: req.url });
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      });
+      res.end(body);
+    });
+    await new Promise(resolve => originServer.listen(originPort, '127.0.0.1', resolve));
+
+    const proxyProcess = spawn('node', ['/tmp/workspace/forkeith/node-proxy-kutti/proxy.js'], {
+      cwd: '/tmp/workspace/forkeith/node-proxy-kutti',
+      env: {
+        ...process.env,
+        PROXY_KUTTI_CONFIG: '/nonexistent/proxy-kutti-e2e-config',
+        PROXY_KUTTI_host: '127.0.0.1',
+        PROXY_KUTTI_port: String(proxyPort),
+        PROXY_KUTTI_cache_dir: integrationCacheDir,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const waitForProxyReady = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for proxy to start')), 5000);
+      proxyProcess.stdout.on('data', data => {
+        if (data.toString().includes('Proxy-kutti is running')) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+      proxyProcess.on('exit', code => {
+        clearTimeout(timeout);
+        reject(new Error(`Proxy exited early with code ${code}`));
+      });
+    });
+
+    const requestViaProxy = pathName =>
+      new Promise((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: '127.0.0.1',
+            port: proxyPort,
+            method: 'GET',
+            path: `http://127.0.0.1:${originPort}${pathName}`,
+          },
+          res => {
+            let body = '';
+            res.on('data', chunk => (body += chunk));
+            res.on('end', () => resolve({ statusCode: res.statusCode, body }));
+          }
+        );
+        req.setTimeout(3000, () => req.destroy(new Error('Timed out waiting for proxy response')));
+        req.on('error', reject);
+        req.end();
+      });
+
+    try {
+      await waitForProxyReady;
+      const first = await requestViaProxy('/api/e2e-cache-hit');
+      const countAfterFirst = originRequestCount;
+      const second = await requestViaProxy('/api/e2e-cache-hit');
+
+      assert.strictEqual(first.statusCode, 200);
+      assert.strictEqual(second.statusCode, 200);
+      assert.strictEqual(originRequestCount, countAfterFirst);
+      assert.strictEqual(
+        JSON.parse(first.body).requestCount,
+        JSON.parse(second.body).requestCount
+      );
+
+      const cachedFile = `${integrationCacheDir}/http/127.0.0.1:${originPort}/GET/api/e2e-cache-hit.data`;
+      assert.ok(fs.existsSync(cachedFile));
+      assert.ok(fs.existsSync(`${cachedFile}.meta`));
+    } finally {
+      await new Promise(resolve => originServer.close(resolve));
+      const proxyExit = new Promise(resolve => proxyProcess.once('exit', resolve));
+      if (proxyProcess.exitCode === null) {
+        proxyProcess.kill('SIGTERM');
+      }
+      await Promise.race([proxyExit, wait(1000)]);
+      if (proxyProcess.exitCode === null) {
+        proxyProcess.kill('SIGKILL');
+        await proxyExit;
+      }
+      fs.rmSync(integrationCacheDir, { recursive: true, force: true });
+    }
   });
 });
