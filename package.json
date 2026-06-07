@@ -10,7 +10,7 @@
     "proxy-kutti": "./proxy.js"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "node-forge": "^1.3.1"
