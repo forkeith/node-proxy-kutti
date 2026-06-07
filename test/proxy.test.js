@@ -244,6 +244,36 @@ describe('cacheHit', () => {
     for await (const chunk of proxyRes) body += chunk;
     assert.strictEqual(body, '');
   });
+
+  it('backfills missing proxy-kutti-orig-request in legacy metadata', async () => {
+    const cachedFile = path.join(tmpCacheDir, 'legacy-hit.data');
+    const cachedFileMeta = `${cachedFile}.meta`;
+    fs.writeFileSync(cachedFile, 'legacy-body');
+    fs.writeFileSync(
+      cachedFileMeta,
+      JSON.stringify({
+        headers: { 'content-type': 'text/plain' },
+        statusCode: 200,
+      })
+    );
+
+    const requestDetails = {
+      host: 'legacy.example.com',
+      path: '/legacy-hit',
+      method: 'GET',
+      headers: {},
+      state: { cachedFile, cachedFileMeta },
+    };
+    const proxyRes = await cacheHit(requestDetails);
+    assert.notStrictEqual(proxyRes, null);
+    await wait(25);
+
+    const updatedMeta = JSON.parse(fs.readFileSync(cachedFileMeta, 'utf8'));
+    assert.ok(updatedMeta['proxy-kutti-orig-request']);
+    assert.strictEqual(updatedMeta['proxy-kutti-orig-request'].host, requestDetails.host);
+    assert.strictEqual(updatedMeta['proxy-kutti-orig-request'].state, null);
+    assert.ok(updatedMeta['proxy-kutti-orig-request']['cache-date']);
+  });
 });
 
 describe('guessContentType', () => {
@@ -324,6 +354,30 @@ describe('importIntoCache', () => {
     const { cachedFile } = computeCacheDetails('https', 'GET', importUrl);
     const metaData = JSON.parse(fs.readFileSync(`${cachedFile}.meta`, 'utf8'));
     assert.strictEqual(metaData.headers['content-type'], 'application/x-equals');
+  });
+
+  it('supports --content-type before positional args', async () => {
+    const srcFile = path.join(tmpCacheDir, 'src-asset-leading-flag.tgz');
+    fs.writeFileSync(srcFile, 'binary stuff');
+
+    const importUrl = 'https://example.com/downloads/asset-leading-flag.tgz';
+    await importIntoCache(['--content-type', 'application/custom-tgz', importUrl, srcFile]);
+
+    const { cachedFile } = computeCacheDetails('https', 'GET', importUrl);
+    const metaData = JSON.parse(fs.readFileSync(`${cachedFile}.meta`, 'utf8'));
+    assert.strictEqual(metaData.headers['content-type'], 'application/custom-tgz');
+  });
+
+  it('falls back to inferred content type when --content-type has no value', async () => {
+    const srcFile = path.join(tmpCacheDir, 'src-asset-missing-override.tgz');
+    fs.writeFileSync(srcFile, 'binary stuff');
+
+    const importUrl = 'https://example.com/downloads/asset-missing-override.tgz';
+    await importIntoCache([importUrl, srcFile, '--content-type']);
+
+    const { cachedFile } = computeCacheDetails('https', 'GET', importUrl);
+    const metaData = JSON.parse(fs.readFileSync(`${cachedFile}.meta`, 'utf8'));
+    assert.strictEqual(metaData.headers['content-type'], 'application/gzip');
   });
 });
 
