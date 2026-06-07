@@ -8,6 +8,11 @@ const http = require('http');
 const net = require('net');
 const { spawn } = require('child_process');
 const tmpCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-kutti-test-'));
+const proxyScriptPath = path.resolve(__dirname, '../proxy.js');
+const PROXY_STARTUP_TIMEOUT_MS = 5000;
+const PROXY_REQUEST_TIMEOUT_MS = 3000;
+const PROXY_SHUTDOWN_TIMEOUT_MS = 1000;
+const PROXY_INTEGRATION_TEST_TIMEOUT_MS = 15000;
 process.env.PROXY_KUTTI_cache_dir = tmpCacheDir;
 
 const { describe, it, after } = require('node:test');
@@ -323,8 +328,11 @@ describe('importIntoCache', () => {
 });
 
 describe('proxy integration cache behavior', () => {
-  it('serves identical second request from cache without hitting origin again', { timeout: 15000 }, async () => {
-    const integrationCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-kutti-e2e-'));
+  it(
+    'serves identical second request from cache without hitting origin again',
+    { timeout: PROXY_INTEGRATION_TEST_TIMEOUT_MS },
+    async () => {
+    const e2eCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-kutti-e2e-'));
     const originPort = await getFreePort();
     const proxyPort = await getFreePort();
     let originRequestCount = 0;
@@ -339,20 +347,20 @@ describe('proxy integration cache behavior', () => {
     });
     await new Promise(resolve => originServer.listen(originPort, '127.0.0.1', resolve));
 
-    const proxyProcess = spawn('node', ['/tmp/workspace/forkeith/node-proxy-kutti/proxy.js'], {
-      cwd: '/tmp/workspace/forkeith/node-proxy-kutti',
+    const proxyProcess = spawn('node', [proxyScriptPath], {
+      cwd: path.dirname(proxyScriptPath),
       env: {
         ...process.env,
         PROXY_KUTTI_CONFIG: '/nonexistent/proxy-kutti-e2e-config',
         PROXY_KUTTI_host: '127.0.0.1',
         PROXY_KUTTI_port: String(proxyPort),
-        PROXY_KUTTI_cache_dir: integrationCacheDir,
+        PROXY_KUTTI_cache_dir: e2eCacheDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const waitForProxyReady = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timed out waiting for proxy to start')), 5000);
+      const timeout = setTimeout(() => reject(new Error('Timed out waiting for proxy to start')), PROXY_STARTUP_TIMEOUT_MS);
       proxyProcess.stdout.on('data', data => {
         if (data.toString().includes('Proxy-kutti is running')) {
           clearTimeout(timeout);
@@ -362,7 +370,8 @@ describe('proxy integration cache behavior', () => {
       proxyProcess.on('exit', code => {
         clearTimeout(timeout);
         reject(new Error(`Proxy exited early with code ${code}`));
-      });
+        }
+      );
     });
 
     const requestViaProxy = pathName =>
@@ -380,7 +389,7 @@ describe('proxy integration cache behavior', () => {
             res.on('end', () => resolve({ statusCode: res.statusCode, body }));
           }
         );
-        req.setTimeout(3000, () => req.destroy(new Error('Timed out waiting for proxy response')));
+        req.setTimeout(PROXY_REQUEST_TIMEOUT_MS, () => req.destroy(new Error('Timed out waiting for proxy response')));
         req.on('error', reject);
         req.end();
       });
@@ -399,7 +408,7 @@ describe('proxy integration cache behavior', () => {
         JSON.parse(second.body).requestCount
       );
 
-      const cachedFile = `${integrationCacheDir}/http/127.0.0.1:${originPort}/GET/api/e2e-cache-hit.data`;
+      const cachedFile = `${e2eCacheDir}/http/127.0.0.1:${originPort}/GET/api/e2e-cache-hit.data`;
       assert.ok(fs.existsSync(cachedFile));
       assert.ok(fs.existsSync(`${cachedFile}.meta`));
     } finally {
@@ -408,12 +417,15 @@ describe('proxy integration cache behavior', () => {
       if (proxyProcess.exitCode === null) {
         proxyProcess.kill('SIGTERM');
       }
-      await Promise.race([proxyExit, wait(1000)]);
-      if (proxyProcess.exitCode === null) {
+      const exitedAfterTerm = await Promise.race([
+        proxyExit.then(() => true),
+        wait(PROXY_SHUTDOWN_TIMEOUT_MS).then(() => false),
+      ]);
+      if (!exitedAfterTerm && proxyProcess.exitCode === null) {
         proxyProcess.kill('SIGKILL');
         await proxyExit;
       }
-      fs.rmSync(integrationCacheDir, { recursive: true, force: true });
+      fs.rmSync(e2eCacheDir, { recursive: true, force: true });
     }
   });
 });
